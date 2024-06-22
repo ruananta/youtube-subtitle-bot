@@ -5,6 +5,12 @@ import requests
 import urllib
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
+
+# ruananta
+from telegram import Bot
+import openai
+# ruananta
+
 ##uncomment the comment below when testing bot using .env
 #from dotenv import load_dotenv
 import os
@@ -181,6 +187,7 @@ def choosing(update: Update, context: CallbackContext):
 format_button = [[InlineKeyboardButton(text="SRT", callback_data="SRT")],
                  [InlineKeyboardButton(text='VTT', callback_data="VTT")],
                  [InlineKeyboardButton(text='TXT (NO TIMESTAMP)', callback_data="TXT")],
+                 [InlineKeyboardButton(text='TXT_GPT (NO TIMESTAMP)', callback_data="TXT_GPT")],
                  [InlineKeyboardButton(text='TXT (NO TIMESTAMP) NO WORD WRAP', callback_data="TXT_W")],
                  [InlineKeyboardButton(text="🔙 Back", callback_data="back")]]
 
@@ -334,6 +341,12 @@ def choosing_format(update: Update, context: CallbackContext):
     if user_format == "TXT":
         text_formatted = TextFormatter().format_transcript(returned_data)
         create_file(text_formatted, 'txt', user_chat_id)
+#ruananta
+    if user_format == "TXT_GPT":
+        text_formatted = TextFormatter().format_transcript(returned_data)
+        text_formatted = "Расставь знаки препинания, проверь орфографию, раздели предложения и абзацы. \n\n" + text_formatted
+        text_formatted = format_to_chatgpt(text_formatted)
+        create_file(text_formatted, 'txt', user_chat_id)
     elif user_format == "VTT":
         formated_string = "WEBVTT\n\n" + "\n\n".join(lines) + "\n"
         create_file(formated_string, 'vtt', user_chat_id)
@@ -357,7 +370,22 @@ def choosing_format(update: Update, context: CallbackContext):
     if context.user_data.get("language_button"):
         del context.user_data["language_button"]
     return CHOOSING
+    
+def format_to_chatgpt(text):
+    # Ваш API-ключ OpenAI
+    openai_api_key = "SECRET"
 
+    # Отправьте текст на правку в ChatGPT
+    response = openai.Completion.create(
+        engine="text-davinci-002",  # Используйте подходящий движок (например, gpt-4)
+        prompt=text,
+        max_tokens=50,  # Максимальное количество токенов в ответе
+        api_key=openai_api_key
+    )
+
+    # Получите текст ответа
+    response_text = response['choices'][0]['text'].strip()
+return response_text
 
 def sending_youtube_url(update: Update, context: CallbackContext):
     user_text = update.message.text

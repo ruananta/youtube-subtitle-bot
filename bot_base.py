@@ -7,15 +7,16 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
 
 # ruananta
-from telegram import Bot
 import openai
 # ruananta
 
 ##uncomment the comment below when testing bot using .env
-#from dotenv import load_dotenv
+from dotenv import load_dotenv
 import os
 
 from Addons import db
+
+import tiktoken
 
 from telegram import (
     Update,
@@ -40,12 +41,20 @@ from telegram.ext import (
 
 from telegram.utils.helpers import escape_markdown
 
+from openai import OpenAI
+
 ##uncomment this after filling the .env folder
-#load_dotenv()
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
     format="[%(levelname)s]%(asctime)s - %(message)s"
+)
+openai_api_key = os.getenv("GPT_API")
+
+client = OpenAI(
+    api_key=openai_api_key,  # ваш ключ в VseGPT после регистрации
+    base_url="https://api.vsegpt.ru/v1",
 )
 
 log = logging.getLogger("YoutubeTranscript")
@@ -54,7 +63,7 @@ log.info("\n\n Bot is Starting......")
 CHOOSING, SENDING_YOUTUBE_URL, CHOOSING_LANGUAGE, CHOOSING_FORMAT, TRANSLATE, AGE_RISTRICTED, SEND_BROADCAST = range(7)
 
 choose_button = [
-    ["👻 Extract subtitle", "ℹ️ Help", "👋Done"]
+    ["👻 Получить субтитры", "ℹ️ Помощь", "👋 Прощай"]
 ]
 
 choose_button_markup = ReplyKeyboardMarkup(
@@ -75,7 +84,7 @@ def no_of_subtitle(video_id, update, context):
         context.user_data["transcript_list"] = transcript_list
     except Exception as e:
         log.error(e)
-        update.message.reply_text("No subtitle available for this video",
+        update.message.reply_text("Нет субтитров для этого видео",
                                   reply_markup=choose_button_markup)
         return CHOOSING
     language_button = []
@@ -83,6 +92,10 @@ def no_of_subtitle(video_id, update, context):
     for subtitle in transcript_list:
         language = subtitle.language
         language_code = subtitle.language_code
+        if subtitle.language_code == "ru":
+            language = "русский"
+        elif subtitle.language_code == "en":
+            language = "английский"
         if subtitle.is_generated:
             language_dictionary[language] = f'{language_code}_g'
         else:
@@ -138,9 +151,9 @@ def button_formater(button_list):
 
 
 def start(update: Update, context: CallbackContext):
-    update.message.reply_text(text=f"🙋*Hello* {escape_markdown(update.effective_user.first_name, version=2)},\n"
-                                   "☑️*Click on Extract subtitle to Extract subtitle*\n"
-                                   "☑️*Click on Help if you need help regarding any error that you are geting while using this bot*",
+    update.message.reply_text(text=f"🙋*Привет* {escape_markdown(update.effective_user.first_name, version=2)},\n"
+                                   "☑️*Нажми получить субтитры для начала выгрузки субтитров*\n"
+                                   "☑️*Нажми Помощь если тебе нужна помощь по данному боту*",
                               reply_markup=choose_button_markup,
                               parse_mode=ParseMode.MARKDOWN_V2)
     chat_id = update.message.chat_id
@@ -157,13 +170,14 @@ def start(update: Update, context: CallbackContext):
 
 def choosing(update: Update, context: CallbackContext):
     choice_text = update.message.text
-    if choice_text == "Extract subtitle" or choice_text == "👻 Extract subtitle" or choice_text == "extract subtitle":
+    if (choice_text == "Получить субтитры" or choice_text == "👻 Получить субтитры" or choice_text == "получить субтитры"
+            or choice_text == "get"):
         update.message.reply_text(
-            text="⏩*Send me any youtube video 🔗url that contain subtitle\(Mannual/Generated\):*",
+            text="⏩*Пришли мне любую ссылку youtube видео 🔗url которая содержит субтитры\(Mannual/Generated\):*",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode=ParseMode.MARKDOWN_V2)
         return SENDING_YOUTUBE_URL
-    if choice_text == "ℹ️ Help" or choice_text == "Help" or choice_text == "help":
+    if choice_text == "ℹ️ Помощь" or choice_text == "Помощь" or choice_text == "помощь" or choice_text == "help":
         update.message.reply_text(
             text="*Here is 🗒️list of things i can do for you:*\n"
                  "🔍*Extract subtitle from youtube links in different languages*\n"
@@ -184,10 +198,10 @@ def choosing(update: Update, context: CallbackContext):
 
 
 # MAKING BUTTON TO CHOOSE
-format_button = [[InlineKeyboardButton(text="SRT", callback_data="SRT")],
+format_button = [[InlineKeyboardButton(text='TXT_GPT', callback_data="TXT_GPT")],
+                 [InlineKeyboardButton(text="SRT", callback_data="SRT")],
                  [InlineKeyboardButton(text='VTT', callback_data="VTT")],
                  [InlineKeyboardButton(text='TXT (NO TIMESTAMP)', callback_data="TXT")],
-                 [InlineKeyboardButton(text='TXT_GPT (NO TIMESTAMP)', callback_data="TXT_GPT")],
                  [InlineKeyboardButton(text='TXT (NO TIMESTAMP) NO WORD WRAP', callback_data="TXT_W")],
                  [InlineKeyboardButton(text="🔙 Back", callback_data="back")]]
 
@@ -252,7 +266,7 @@ def choosing_language(update: Update, context: CallbackContext):
             context.user_data["returned_data"] = returned_data
 
     update.callback_query.message.reply_text(
-        text="🧖 *In which format do want your subtitle?:*",
+        text="🧖 *В каком формате вы хотите субтитры?:*",
         reply_markup=format_button_markup,
         parse_mode=ParseMode.MARKDOWN_V2)
     return CHOOSING_FORMAT
@@ -308,14 +322,14 @@ def choosing_format(update: Update, context: CallbackContext):
         selected_language.delete()
         language_button = context.user_data.get("language_button")
         update.callback_query.message.edit_text(
-            text="*⏬Choose the available language in this video or Click on* _Translate_ *to translate subtitle to other 🉐languages:*",
+            text="*⏬Выбери доступный язык или нажми на кнопку перевод, для автоматического перевода на другой язык:*",
             reply_markup=language_button,
             parse_mode=ParseMode.MARKDOWN_V2)
         return CHOOSING_LANGUAGE
     user_chat_id = update.callback_query.message.chat_id
-    Display_format = user_format.replace("_W", "")
+    Display_format = user_format.replace("_W", "").replace("_GPT", "")
     bot_message = update.callback_query.message.edit_text(
-        text=f"*Format: {Display_format}\n\n🟢Your subtitle is ready:*",
+        text=f"*Format: {Display_format}\n\n🟢Твои субтитры готовы:*",
         parse_mode=ParseMode.MARKDOWN_V2)
     text_formatted = ""
     lines = []
@@ -341,12 +355,11 @@ def choosing_format(update: Update, context: CallbackContext):
     if user_format == "TXT":
         text_formatted = TextFormatter().format_transcript(returned_data)
         create_file(text_formatted, 'txt', user_chat_id)
-#ruananta
+    # ruananta
     if user_format == "TXT_GPT":
         text_formatted = TextFormatter().format_transcript(returned_data)
-        text_formatted = "Расставь знаки препинания, проверь орфографию, раздели предложения и абзацы. \n\n" + text_formatted
         text_formatted = format_to_chatgpt(text_formatted)
-        create_file(text_formatted, 'txt', user_chat_id)
+        create_file(text_formatted, 'txt_gpt', user_chat_id)
     elif user_format == "VTT":
         formated_string = "WEBVTT\n\n" + "\n\n".join(lines) + "\n"
         create_file(formated_string, 'vtt', user_chat_id)
@@ -361,7 +374,7 @@ def choosing_format(update: Update, context: CallbackContext):
     context.bot.send_document(user_chat_id, open(
         f"{user_chat_id}.{user_format.lower()}", "rb"), f"{my_file_name}.{user_format.lower()}",
                               reply_markup=choose_button_markup,
-                              caption=f"Made with 🧠 \n~by @{bot_message.from_user.username}")
+                              caption=f"Сделано в 🧠 \n~by @{bot_message.from_user.username}")
     os.remove(f"{user_chat_id}.{user_format.lower()}")
     if context.user_data.get("returned_data"):
         del context.user_data["returned_data"]
@@ -370,22 +383,67 @@ def choosing_format(update: Update, context: CallbackContext):
     if context.user_data.get("language_button"):
         del context.user_data["language_button"]
     return CHOOSING
-    
+
+def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0613"):
+    """Return the number of tokens used by a list of messages."""
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        print("Warning: model not found. Using cl100k_base encoding.")
+        encoding = tiktoken.get_encoding("cl100k_base")
+    if model in {
+        "openai/gpt-3.5-turbo-0125",
+        "gpt-3.5-turbo-0613",
+        "gpt-3.5-turbo-16k-0613",
+        "gpt-4-0314",
+        "gpt-4-32k-0314",
+        "gpt-4-0613",
+        "gpt-4-32k-0613",
+    }:
+        tokens_per_message = 3
+        tokens_per_name = 1
+    elif model == "gpt-3.5-turbo-0301":
+        tokens_per_message = 4  # every message follows <|start|>{role/name}\n{content}<|end|>\n
+        tokens_per_name = -1  # if there's a name, the role is omitted
+    elif "gpt-3.5-turbo" in model:
+        print("Warning: gpt-3.5-turbo may update over time. Returning num tokens assuming gpt-3.5-turbo-0613.")
+        return num_tokens_from_messages(messages, model="gpt-3.5-turbo-0613")
+    elif "gpt-4" in model:
+        print("Warning: gpt-4 may update over time. Returning num tokens assuming gpt-4-0613.")
+        return num_tokens_from_messages(messages, model="gpt-4-0613")
+    else:
+        raise NotImplementedError(
+            f"""num_tokens_from_messages() is not implemented for model {model}. See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens."""
+        )
+    num_tokens = 0
+    for message in messages:
+        num_tokens += tokens_per_message
+        for key, value in message.items():
+            num_tokens += len(encoding.encode(value))
+            if key == "name":
+                num_tokens += tokens_per_name
+    num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
+    return num_tokens
+
 def format_to_chatgpt(text):
-    # Ваш API-ключ OpenAI
-    openai_api_key = "SECRET"
+    prompt = "Расставь знаки препинания, проверь орфографию, раздели предложения и абзацы. \n\n" + text
+    messages = []
+    messages.append({"role": "user", "content": prompt})
+    max_tokens = len(prompt.split()) + int(len(prompt.split()) * 0.2)
+    try:
+        response_big = client.chat.completions.create(
+            model="openai/gpt-3.5-turbo-0125",
+            messages=messages,
+            temperature=0.7,
+            n=1,
+            max_tokens=4096,  # максимальное число ВЫХОДНЫХ токенов. Для большинства моделей не должно превышать 4096
+            extra_headers={"X-Title": "YTTDL"},  # опционально - передача информация об источнике API-вызова
+        )
+        response_text = response_big.choices[0].message.content
+        return response_text
+    except Exception as e:
+        return str(e)
 
-    # Отправьте текст на правку в ChatGPT
-    response = openai.Completion.create(
-        engine="text-davinci-002",  # Используйте подходящий движок (например, gpt-4)
-        prompt=text,
-        max_tokens=50,  # Максимальное количество токенов в ответе
-        api_key=openai_api_key
-    )
-
-    # Получите текст ответа
-    response_text = response['choices'][0]['text'].strip()
-return response_text
 
 def sending_youtube_url(update: Update, context: CallbackContext):
     user_text = update.message.text
@@ -393,7 +451,7 @@ def sending_youtube_url(update: Update, context: CallbackContext):
     context.user_data["video_id"] = video_id
     if video_id is None:
         update.message.reply_text(
-            text="🚫*Your link doesn't seem to be any video link of youtube, please 🕵️‍♀️check the 🔗link and try again*",
+            text="🚫*Ваша ссылка, похоже, не является ссылкой на видео с YouTube. Пожалуйста, 🕵️‍♀️проверьте 🔗ссылку и попробуйте снова.*",
             reply_markup=choose_button_markup,
             parse_mode=ParseMode.MARKDOWN_V2)
         return CHOOSING
@@ -403,7 +461,7 @@ def sending_youtube_url(update: Update, context: CallbackContext):
             return CHOOSING
         language_button, language_dictionary = button_dictionary
         update.message.reply_text(
-            text="*⏬Choose the available language in this video or Click on* _Translate_ *to translate subtitle to other 🉐languages:*",
+            text="*⏬Выберите доступный язык или нажми на кнопку перевод, для автоматического перевода на другой язык:*",
             reply_markup=language_button, parse_mode=ParseMode.MARKDOWN_V2)
         context.user_data["language_button"] = language_button
         context.user_data["language_dictionary"] = language_dictionary
@@ -483,6 +541,8 @@ def done(update: Update, context: CallbackContext):
 
 
 def main():
+    if os.path.exists("Youtube_link"):
+        os.remove("Youtube_link")
     persistence = PicklePersistence(filename="Youtube_link")
     try:
         updater = Updater(token=os.getenv("API_TOKEN"),
@@ -500,7 +560,7 @@ def main():
             CHOOSING: [
                 MessageHandler(
                     Filters.regex(
-                        '^(Extract subtitle|Help|👻 Extract subtitle|ℹ️ Help|extract subtitle|help)$',
+                        '^(Получить субтитры|Помощь|👻 Получить субтитры|ℹ️ Помощь|получить субтитры|помощь|get|help)$',
                     ),
                     choosing
                 )
@@ -520,11 +580,11 @@ def main():
             ],
             CHOOSING_FORMAT: [
                 CallbackQueryHandler(
-                    choosing_format, pattern=r'^(SRT|VTT|TXT|TXT_W|back)$')
+                    choosing_format, pattern=r'^(SRT|VTT|TXT|TXT_W|TXT_GPT|back)$')
             ],
         },
         fallbacks=[CommandHandler("start", start), MessageHandler(
-            Filters.regex('^(👋Done|Done|done)$', ), done)],
+            Filters.regex('^(👋 Прощай|👋Прощай|Прощай|done|прощай)$', ), done)],
         name="conversation_with_user",
         persistent=True
     )
